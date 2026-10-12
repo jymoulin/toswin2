@@ -387,12 +387,13 @@ add_fd(int fd)
 #define READBUFSIZ 4096 	/* 256 */
 static char buf[READBUFSIZ];
 
-void
+int
 fd_input(void)
 {
 	long readfds, r, checkdead;
 	WINDOW *w;
 	TEXTWIN *t;
+	int got_data = 0;
 
 	r = 0;
 	checkdead = 0;
@@ -407,8 +408,17 @@ fd_input(void)
 
 	if (fdmask) 
 	{
-		readfds = fdmask;
-		if ((r = Fselect(1, &readfds, 0L, 0L)) > 0)
+		/* poll without sleeping: Fselect() with a 1 ms timeout puts the
+		 * process to sleep until the next kernel tick whenever no pty has
+		 * data, which is nearly every time this is called */
+		int i;
+
+		readfds = 0;
+		for (i = 0; i < 32; i++)
+			if ((fdmask & (1L << i)) && Finstat(i) != 0)
+				readfds |= 1L << i;
+		r = readfds ? 1 : 0;
+		if (r > 0)
 		{
 			if (gl_con_output && con_win == NULL && con_fd > 0 && (readfds & (1L << con_fd)))
 				create_console(FALSE);
@@ -427,6 +437,7 @@ fd_input(void)
 					long int read_bytes = Fread(t->fd, (long)READBUFSIZ, buf);
 					if (read_bytes > 0)
 					{
+						got_data = 1;
 						write_text(t, buf, read_bytes);
 						if (t->fd == con_fd)
 							handle_console(buf, read_bytes);
@@ -459,6 +470,7 @@ fd_input(void)
 
 		refresh_textwin(t, FALSE);
 	}
+	return got_data;
 }
 
 /*

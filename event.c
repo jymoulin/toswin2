@@ -6,6 +6,7 @@
  */
 
 #include <string.h>
+#include <time.h>
 #include <gem.h>
 
 #include "version.h"
@@ -295,10 +296,23 @@ short needs_redraw(TEXTWIN *t)
 }
 
 /******************************************************************************/
+#define TIMER_FAST	50	/* ms, while something happens */
+#define TIMER_SLOW	200	/* ms, when nothing has for a while */
+
 void event_loop(void)
 {
 	short evset, event, msx, msy, mbutton, kstate, mbreturn, kreturn;
 	short msgbuff[8], item, title;
+
+	/* The ptys can only be polled: the AES has no way to wake us when
+	 * one has data.  Poll every 50 ms while something is going on, and
+	 * back off to 200 ms after a second of nothing -- every wake up costs
+	 * an AES call, and at 20 a second that was a quarter of a Falcon.
+	 * A key, a click or a message brings the short delay back at once,
+	 * so typing stays as quick as it was.
+	 */
+	short delay = TIMER_FAST, quiet = 0;
+	clock_t last_blink = clock();
 
 	evset = (MU_MESAG | MU_BUTTON | MU_KEYBD);
 	do
@@ -313,7 +327,7 @@ void event_loop(void)
 				0, 0, 0, 0, 0,
 				0, 0, 0, 0, 0,
 				msgbuff,
-				50,
+				delay,
 				&msx, &msy, &mbutton, &kstate,
 				&kreturn, &mbreturn);
 
@@ -339,9 +353,21 @@ void event_loop(void)
 				window_click(mbreturn, msx, msy, kstate, mbutton);
 
 		if (event & MU_TIMER) {
-			fd_input();
-			if (curs_ticks % 6 == 0)
+			if (fd_input())
+				event |= MU_MESAG;	/* counts as activity */
+			/* the cursor blinks by the clock, whatever the delay */
+			if (clock() - last_blink >= CLOCKS_PER_SEC * 3 / 10) {
+				last_blink = clock();
 				window_timer ();
+			}
+		}
+
+		if (event & (MU_MESAG | MU_KEYBD | MU_BUTTON)) {
+			delay = TIMER_FAST;
+			quiet = 0;
+		} else if (++quiet > 1000 / TIMER_FAST && delay < TIMER_SLOW) {
+			delay *= 2;
+			quiet = 0;
 		}
 		
 		++draw_ticks;
