@@ -781,6 +781,17 @@ void window_timer (void)
 	}
 }
 
+/* stop blinking: leave the cursor drawn in every window */
+void window_cursor_show (void)
+{
+	WINDOW* win;
+
+	for (win = gl_winlist; win != NULL; win = win->next) {
+		if (!is_console (win) && win->timer)
+			win->timer (win, -1);
+	}
+}
+
 void draw_winicon(WINDOW *win)
 {
 	OBJECT	*icon;

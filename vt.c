@@ -54,6 +54,13 @@ void paint(TEXTWIN *v, unsigned int c)
 			v->cflags[line][i] = v->cflags[line][i-1] | CDIRTY;
 		}
 	}
+	else if (v->cdata[line][v->cx] == c && v->cflags[line][v->cx] == use_attribute)
+	{
+		/* the same character with the same attributes, and already on
+		 * screen (not dirty): nothing to redraw.  Programs that repaint
+		 * the whole screen to change a few cells are common. */
+		return;
+	}
 	v->cdata[line][v->cx] = c;
 	v->cflags[line][v->cx] = CDIRTY | use_attribute;
 	v->dirty[line] |= SOMEDIRTY;

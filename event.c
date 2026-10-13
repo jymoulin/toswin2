@@ -298,6 +298,12 @@ short needs_redraw(TEXTWIN *t)
 /******************************************************************************/
 #define TIMER_FAST	50	/* ms, while something happens */
 #define TIMER_SLOW	200	/* ms, when nothing has for a while */
+#define TIMER_IDLE	1000	/* ms, after IDLE_AFTER of complete quiet */
+
+#define FAST_USER	(CLOCKS_PER_SEC)		/* after a key, click, message */
+#define FAST_DATA	(CLOCKS_PER_SEC * 3 / 20)	/* after pty data: ~3 polls */
+#define IDLE_AFTER	(CLOCKS_PER_SEC * 10)		/* no blink, slowest poll */
+#define BLINK		(CLOCKS_PER_SEC * 3 / 10)
 
 void event_loop(void)
 {
@@ -305,14 +311,27 @@ void event_loop(void)
 	short msgbuff[8], item, title;
 
 	/* The ptys can only be polled: the AES has no way to wake us when
-	 * one has data.  Poll every 50 ms while something is going on, and
-	 * back off to 200 ms after a second of nothing -- every wake up costs
-	 * an AES call, and at 20 a second that was a quarter of a Falcon.
-	 * A key, a click or a message brings the short delay back at once,
-	 * so typing stays as quick as it was.
+	 * one has data, and every wake up costs an AES call.  So:
+	 *
+	 *  - 50 ms for a second after a key, a click or a message, so that
+	 *    typing stays quick;
+	 *  - 50 ms for a few polls after a pty had data, then back to 200 ms:
+	 *    a steady stream (cat) keeps finding data and stays fast, while
+	 *    a program that writes once a second (top) no longer holds the
+	 *    fast rate all the time;
+	 *  - 200 ms otherwise, and 1 s after ten seconds of complete quiet.
+	 *    A key still wakes us at once; output from a background job may
+	 *    then show up to a second late.
+	 *
+	 * The cursor stops blinking after the same ten seconds, and is left
+	 * drawn: each blink is a dozen AES and VDI calls per window.
+	 *
+	 * clock() is a trap (it reads _hz_200 in supervisor mode), so it is
+	 * read once per wake up.
 	 */
-	short delay = TIMER_FAST, quiet = 0;
-	clock_t last_blink = clock();
+	short delay = TIMER_FAST, blinking = 1;
+	clock_t now = clock();
+	clock_t last_user = now, last_data = now, last_blink = now;
 
 	evset = (MU_MESAG | MU_BUTTON | MU_KEYBD);
 	do
@@ -330,6 +349,8 @@ void event_loop(void)
 				delay,
 				&msx, &msy, &mbutton, &kstate,
 				&kreturn, &mbreturn);
+
+		now = clock();
 
 		if (event & MU_MESAG) 
 			handle_msg(msgbuff);
@@ -352,22 +373,34 @@ void event_loop(void)
 			if (!click_wdial(mbreturn, msx, msy, kstate, mbutton))
 				window_click(mbreturn, msx, msy, kstate, mbutton);
 
+		if (event & (MU_MESAG | MU_KEYBD | MU_BUTTON))
+			last_user = now;
+
 		if (event & MU_TIMER) {
 			if (fd_input())
-				event |= MU_MESAG;	/* counts as activity */
-			/* the cursor blinks by the clock, whatever the delay */
-			if (clock() - last_blink >= CLOCKS_PER_SEC * 3 / 10) {
-				last_blink = clock();
-				window_timer ();
-			}
+				last_data = now;
 		}
 
-		if (event & (MU_MESAG | MU_KEYBD | MU_BUTTON)) {
-			delay = TIMER_FAST;
-			quiet = 0;
-		} else if (++quiet > 1000 / TIMER_FAST && delay < TIMER_SLOW) {
-			delay *= 2;
-			quiet = 0;
+		if (now - last_user < IDLE_AFTER || now - last_data < IDLE_AFTER) {
+			if (!blinking) {
+				blinking = 1;
+				last_blink = now;
+			}
+			/* the cursor blinks by the clock, whatever the delay */
+			if ((event & MU_TIMER) && now - last_blink >= BLINK) {
+				last_blink = now;
+				window_timer ();
+			}
+			if (now - last_user < FAST_USER || now - last_data < FAST_DATA)
+				delay = TIMER_FAST;
+			else
+				delay = TIMER_SLOW;
+		} else {
+			if (blinking) {
+				blinking = 0;
+				window_cursor_show ();
+			}
+			delay = TIMER_IDLE;
 		}
 		
 		++draw_ticks;

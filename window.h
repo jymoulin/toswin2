@@ -101,6 +101,7 @@ bool 	window_msg(short *msgbuff);
 bool	window_key(short keycode, short shift);
 bool	window_click(short clicks, short x, short y, short kshift, short mbutton);
 void	window_timer (void);
+void	window_cursor_show(void);
 
 void	wdial_open(WDIALOG *dial);
 void	wdial_close(WDIALOG *dial);
