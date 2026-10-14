@@ -415,8 +415,26 @@ fd_input(void)
 
 		readfds = 0;
 		for (i = 0; i < 32; i++)
-			if ((fdmask & (1L << i)) && Finstat(i) != 0)
+		{
+			long n;
+
+			if (!(fdmask & (1L << i)))
+				continue;
+			n = Finstat(i);
+			if (n > 0)
 				readfds |= 1L << i;
+			else if (n < 0)
+			{
+				/* no writer: either the child is gone, or it has
+				 * not opened the pty yet (a fresh shell).  Only
+				 * Fselect() tells them apart; it returns at once
+				 * in the first case. */
+				long one = 1L << i;
+
+				if (Fselect(1, &one, 0L, 0L) > 0 && one)
+					readfds |= 1L << i;
+			}
+		}
 		r = readfds ? 1 : 0;
 		if (r > 0)
 		{
