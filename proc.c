@@ -26,6 +26,8 @@
 
 /* static long 	lasthz; */
 static long 	fdmask = 0L;
+/* ptys that have had a writer once: from then on, no writer means dead */
+static long	fd_alive = 0L;
 static int	shell_cnt = 0;
 static OBJECT	*argbox;
 
@@ -191,6 +193,7 @@ new_proc(char *progname, char *arg, char *env, char *progdir,
 
 	t->pgrp = i;
 	fdmask |= (1L << ourfd);
+	fd_alive &= ~(1L << ourfd);
 
 	/* turn on the cursor in the window */
 	(*t->output)(t, '\033');
@@ -353,6 +356,7 @@ rebuild_fdmask(long which)
 			
 			/* window has died now */
 			fdmask &= ~(1L << i);
+			fd_alive &= ~(1L << i);
 			
 			for (w = gl_winlist; w; w = wnext) 
 			{
@@ -382,6 +386,30 @@ void
 add_fd(int fd)
 {
 	fdmask |= (1L << fd);
+	fd_alive &= ~(1L << fd);
+}
+
+/*
+ * A pty reads as "no writer" both when its shell has gone and, after
+ * a "Start shell", until the new child has opened it.  The second case
+ * only exists while the child that should open it is still running.
+ */
+static int
+child_starting(int fd)
+{
+	WINDOW *w;
+
+	for (w = gl_winlist; w; w = w->next)
+	{
+		TEXTWIN *t;
+
+		if (w->flags & WISDIAL)
+			continue;
+		t = w->extra;
+		if (t && t->fd == fd)
+			return t->pgrp > 0 && Pkill(t->pgrp, 0) != -ENOENT;
+	}
+	return 0;
 }
 
 #define READBUFSIZ 4096 	/* 256 */
@@ -416,23 +444,28 @@ fd_input(void)
 		readfds = 0;
 		for (i = 0; i < 32; i++)
 		{
-			long n;
+			long n, bit = 1L << i;
 
-			if (!(fdmask & (1L << i)))
+			if (!(fdmask & bit))
 				continue;
 			n = Finstat(i);
-			if (n > 0)
-				readfds |= 1L << i;
-			else if (n < 0)
+			if (n >= 0)
 			{
-				/* no writer: either the child is gone, or it has
-				 * not opened the pty yet (a fresh shell).  Only
-				 * Fselect() tells them apart; it returns at once
-				 * in the first case. */
-				long one = 1L << i;
-
-				if (Fselect(1, &one, 0L, 0L) > 0 && one)
-					readfds |= 1L << i;
+				fd_alive |= bit;
+				if (n > 0)
+					readfds |= bit;
+			}
+			else if (n == -EBADF)
+			{
+				/* closed behind our back (term_proc) */
+				fdmask &= ~bit;
+				fd_alive &= ~bit;
+			}
+			else if ((fd_alive & bit) || !child_starting(i))
+			{
+				/* no writer and not a fresh shell: the read
+				 * returns 0 and the window is closed */
+				readfds |= bit;
 			}
 		}
 		r = readfds ? 1 : 0;
